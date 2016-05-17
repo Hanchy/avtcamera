@@ -38,6 +38,7 @@ set(SRC
   ${PROJECT_SOURCE_DIR}/src/CameraObserver.cpp
   ${PROJECT_SOURCE_DIR}/src/FrameObserver.cpp
   ${PROJECT_SOURCE_DIR}/src/FindCorners.cpp
+  ${PROJECT_SOURCE_DIR}/src/AVTCamera.cpp
   ${PROJECT_SOURCE_DIR}/src/ReadAVT.cpp
   )
 
