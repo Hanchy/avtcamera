@@ -2,6 +2,10 @@
 #include "Common/StreamSystemInfo.h"
 #include "Common/ErrorCodeToMessage.h"
 
+
+enum    { NUM_FRAMES=3, };
+
+
 AVTCamera::AVTCamera(VimbaSystem *_Vmb_Sys,
                      const std::string &_camera_id): p_vimba_system_(NULL){
   if (_Vmb_Sys != nullptr) {
@@ -12,12 +16,11 @@ AVTCamera::AVTCamera(VimbaSystem *_Vmb_Sys,
   is_opened_ = false;
   settings_loaded_ = false;
   p_camera_ = nullptr;
-
 }
 
 
 AVTCamera::~AVTCamera() {
-  
+  this->Close();
 }
 
 
@@ -29,6 +32,7 @@ VmbErrorType        AVTCamera::Open() {
   res = p_vimba_system_->OpenCameraByID(camera_id_.c_str(),
                                         VmbAccessModeFull,
                                         p_camera_);
+
   if (VmbErrorSuccess == res) {
     FeaturePtr pCommandFeature;
     res = p_camera_->GetFeatureByName("GVSPAdjustPacketSize", pCommandFeature);
@@ -50,7 +54,18 @@ VmbErrorType        AVTCamera::Open() {
 
 
 VmbErrorType AVTCamera::Close() {
-  return is_opened_? p_camera_->Close() : VmbErrorSuccess;
+  VmbErrorType err = VmbErrorSuccess;
+  if (is_opened_) {
+    is_opened_ = false;
+    settings_loaded_ = false;
+    camera_id_ = "";
+    width_ = 0;
+    height_ = 0;
+    FPS_ = 0;
+    err = p_camera_->Close();
+    p_camera_ = nullptr;
+  }
+  return err;
 }
 
 
@@ -89,6 +104,14 @@ VmbErrorType AVTCamera::LoadSettings(const std::string &_settings_file) {
   if( VmbErrorSuccess == res ) {
     res = SP_ACCESS(pFeatureFPS)->GetValue( FPS_ );
   }
+
+  res = p_camera_->GetFeatureByName("GevTimestamptickfrequency", pFeature);
+  if (VmbErrorSuccess == res)
+    pFeature->GetValue(timestamp_frq_);
+
+  res = p_camera_->GetFeatureByName("GevTimestampValue", p_timestamp_);
+
+  return res;
 }
 
 
@@ -109,6 +132,14 @@ VmbErrorType AVTCamera::ResetTimestamp() {
   return err;
 }
 
+VmbErrorType AVTCamera::GetFeatureByName(const std::string &_feature_name,
+                                         FeaturePtr &_p_feature) {
+  return is_opened_?
+      p_camera_->GetFeatureByName(_feature_name.c_str(), _p_feature) :
+      VmbErrorDeviceNotOpen;
+}
+
+
 
 VmbErrorType        AVTCamera::StartContinuousImageAcquisition() {
   if (!is_opened_)
@@ -116,17 +147,16 @@ VmbErrorType        AVTCamera::StartContinuousImageAcquisition() {
   
   SP_SET(p_frame_observer_, new FrameObserver(p_camera_));
   ResetTimestamp();
-  p_camera_->StartContinuousImageAcquisition(3, p_frame_observer_);
+  p_camera_->StartContinuousImageAcquisition(NUM_FRAMES, p_frame_observer_);
 }
 
 
 
 VmbErrorType        AVTCamera::StopContinuousImageAcquisition() {
   // Stop streaming
-  p_camera_->StopContinuousImageAcquisition();
+  return p_camera_->StopContinuousImageAcquisition();
 
   // Close camera
-  return  p_camera_->Close();
 }
 
 
@@ -150,7 +180,7 @@ VmbErrorType        AVTCamera::QueueFrame(FramePtr _p_frame) {
   return p_camera_->QueueFrame( _p_frame );
 }
 
-void        AVTCamera::ClearQueueFrame() {
+void        AVTCamera::ClearFrameQueue() {
   SP_DYN_CAST( p_frame_observer_,FrameObserver )->ClearFrameQueue();
 }
 
@@ -166,3 +196,38 @@ std::string         AVTCamera::ErrorCodeToMessage(VmbErrorType _err) const {
 std::string         AVTCamera::GetCameraID() const {
   return camera_id_;
 }
+
+
+VmbErrorType AVTCamera::GetRawImage(VmbUchar_t *&_p_raw_image,
+                                    double &_time_stamp) {
+
+  AVT::VmbAPI::FramePtr p_frame = GetFrame();
+  while (SP_ISNULL(p_frame)) {
+    p_frame = GetFrame();
+  }
+
+  VmbUint64_t timestamp;
+  p_frame->GetTimestamp(timestamp);
+  _time_stamp =
+      static_cast<double>(timestamp) / static_cast<double>(timestamp_frq_);
+  
+  VmbErrorType res;
+  res = p_frame->GetImage(_p_raw_image);
+  return res;
+}
+
+
+VmbErrorType        AVTCamera::GetRawImage(VmbUchar_t *&_p_raw_image) {
+  AVT::VmbAPI::FramePtr p_frame = GetFrame();
+  
+  while (SP_ISNULL(p_frame)) {
+    p_frame = GetFrame();
+  }
+
+  VmbErrorType res;
+  res = p_frame->GetImage(_p_raw_image);
+
+  return res;
+}
+
+

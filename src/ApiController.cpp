@@ -36,13 +36,12 @@
 namespace AVT {
 namespace VmbAPI {
 
-enum    { NUM_FRAMES=3, };
 
 ApiController::ApiController()
     // Get a reference to the Vimba singleton
     : m_system( VimbaSystem::GetInstance() )
 {
-  m_pCamera = nullptr;
+  m_pCameras.clear();
 }
 
 ApiController::~ApiController()
@@ -82,7 +81,6 @@ VmbErrorType ApiController::StartUp()
     // Register an observer whose callback routine gets triggered whenever a camera is plugged in or out
     res = m_system.RegisterCameraListObserver( m_pCameraObserver );
   }
-
   return res;
 }
 
@@ -91,179 +89,15 @@ VmbErrorType ApiController::StartUp()
 //
 void ApiController::ShutDown()
 {
+  VmbErrorType res;
   // Release Vimba
+  res = m_system.UnregisterCameraListObserver(m_pCameraObserver);
+  if (VmbErrorSuccess != res)
+    std::cerr << "UnregisterCameraListObserver failed\n";
   m_system.Shutdown();
 }
 
-/*** helper function to set image size to a value that is dividable by modulo 2.
-     \note this is needed because VimbaImageTransform does not support odd values for some input formats
-*/
-inline VmbErrorType SetValueIntMod2( const CameraPtr &camera,
-                                     const std::string &featureName,
-                                     VmbInt64_t &storage )
-{
-  VmbErrorType    res;
-  FeaturePtr      pFeature;
-  res = SP_ACCESS( camera )->GetFeatureByName( featureName.c_str(), pFeature );
-  if( VmbErrorSuccess == res )
-  {
-    VmbInt64_t minValue,maxValue;
-    res = SP_ACCESS( pFeature )->GetRange( minValue,maxValue );
-    if( VmbErrorSuccess == res )
-    {
-      maxValue = ( maxValue>>1 )<<1; // mod 2 dividable
-      res = SP_ACCESS( pFeature )->SetValue( maxValue );
-      if( VmbErrorSuccess == res )
-      {
-        storage = maxValue;
-      }
-    }
-  }
-  return res;
-}
 
-
-VmbErrorType ApiController::ResetTimestamp(CameraPtr pCamera) {
-  return VmbErrorSuccess;
-}
-
-VmbErrorType ApiController::ResetTimestamp() {
-  FeaturePtr pFeature;
-  VmbErrorType err = m_pCamera->GetFeatureByName("GevTimestampControlReset",
-                                                 pFeature);
-  if (VmbErrorSuccess == err) {
-    pFeature->RunCommand();
-    bool bIsCommandDone = false;
-    do {
-      SP_ACCESS(pFeature)->IsCommandDone(bIsCommandDone);
-    } while(false == bIsCommandDone);
-  }
-  return err;
-}
-
-VmbErrorType ApiController::OpenCamera(const std::string &rStrCameraID) {
-  if (!SP_ISNULL(m_pCamera))
-    return VmbErrorSuccess;
-    
-  VmbErrorType res = m_system.OpenCameraByID(rStrCameraID.c_str(),
-                                             VmbAccessModeFull,
-                                             m_pCamera);
-  if (VmbErrorSuccess == res) {
-    FeaturePtr pCommandFeature;
-    res = SP_ACCESS(m_pCamera)->GetFeatureByName("GVSPAdjustPacketSize",
-                                                 pCommandFeature);
-    if (VmbErrorSuccess == res) {
-      res = SP_ACCESS(pCommandFeature)->RunCommand();
-      if (VmbErrorSuccess == res) {
-        bool bIsCommandDone = false;
-        do {
-          SP_ACCESS(pCommandFeature)->IsCommandDone(bIsCommandDone);
-        } while (false == bIsCommandDone);
-      }
-    }
-  }
-  return res;
-}
-
-VmbErrorType ApiController::CloseCamera() {
-  return SP_ISNULL(m_pCamera)? VmbErrorSuccess : m_pCamera->Close();
-}
-
-
-VmbErrorType ApiController::LoadSettings(const std::string &settings_file) {
-  if (SP_ISNULL(m_pCamera))
-    return VmbErrorOther;
-
-  VmbFeaturePersistSettings_t settingsStruct;
-  settingsStruct.loggingLevel = 4;
-  settingsStruct.maxIterations = 5;
-  settingsStruct.persistType = VmbFeaturePersistNoLUT;
-
-  VmbErrorType res;
-  res = m_pCamera->LoadCameraSettings(settings_file, &settingsStruct);
-
-
-  FeaturePtr pFeature;
-  res = m_pCamera->GetFeatureByName("Width", pFeature);
-  if (VmbErrorSuccess == res)
-    SP_ACCESS(pFeature)->GetValue(m_nWidth);
-  res = m_pCamera->GetFeatureByName("Height", pFeature);
-  if (VmbErrorSuccess == res)
-    pFeature->GetValue(m_nHeight);
-  
-  
-}
-
-
-//
-// Opens the given camera
-// Sets the maximum possible Ethernet packet size
-// Adjusts the image format
-// Sets up the observer that will be notified on every incoming frame
-// Calls the API convenience function to start image acquisition
-// Closes the camera in case of failure
-//
-// Parameters:
-//  [in]    rStrCameraID    The ID of the camera to open as reported by Vimba
-//
-// Returns:
-//  An API status code
-//
-VmbErrorType ApiController::StartContinuousImageAcquisition(
-    const std::string &rStrCameraID )
-{
-  VmbErrorType res = this->OpenCamera(rStrCameraID);
-
-  if( VmbErrorSuccess == res ) {
-
-    FeaturePtr pFeatureFPS ;
-    res = SP_ACCESS( m_pCamera )->GetFeatureByName(
-        "AcquisitionFrameRateAbs", pFeatureFPS);
-    if( VmbErrorSuccess != res)
-    {
-      // lets try other
-      res = SP_ACCESS( m_pCamera )->GetFeatureByName("AcquisitionFrameRate",
-                                                     pFeatureFPS);
-    }
-    if( VmbErrorSuccess == res )
-    {
-      res = SP_ACCESS(pFeatureFPS)->GetValue( m_FPS );
-    }
-    // Store currently selected image format
-    FeaturePtr pFormatFeature;
-    res = SP_ACCESS( m_pCamera )->GetFeatureByName( "PixelFormat", pFormatFeature );
-    if( VmbErrorSuccess == res )
-    {
-      res = SP_ACCESS( pFormatFeature )->GetValue( m_nPixelFormat );
-      if ( VmbErrorSuccess == res )
-      {
-        // Create a frame observer for this camera (This will be wrapped in a shared_ptr so we don't delete it)
-        SP_SET( m_pFrameObserver , new FrameObserver( m_pCamera ) );
-        // Start streaming
-        ResetTimestamp();
-        res = SP_ACCESS( m_pCamera )->StartContinuousImageAcquisition( NUM_FRAMES,  m_pFrameObserver );
-      }
-    }
-  }
-
-  return res;
-}
-
-//
-// Calls the API convenience function to stop image acquisition
-// Closes the camera
-//
-// Returns:
-//  An API status code
-//
-VmbErrorType ApiController::StopContinuousImageAcquisition()
-{
-  // Stop streaming
-  m_pCamera->StopContinuousImageAcquisition();
-
-  // Close camera
-  return  m_pCamera->Close();
-}
 
 //
 // Gets all cameras known to Vimba
@@ -275,90 +109,29 @@ CameraPtrVector ApiController::GetCameraList()
 {
   CameraPtrVector cameras;
   // Get all known cameras
-  if( VmbErrorSuccess == m_system.GetCameras( cameras ) )
-  {
+  if( VmbErrorSuccess == m_system.GetCameras( cameras ) ) {
     // And return them
     return cameras;
   }
   return CameraPtrVector();
 }
 
-//
-// Gets the width of a frame
-//
-// Returns:
-//  The width as integer
-//
-int ApiController::GetWidth() const
-{
-  return static_cast<int>(m_nWidth);
+
+VmbErrorType ApiController::InitializeCameras() {
+  
+  AVT::VmbAPI::CameraPtrVector cameras_ptr = GetCameraList();
+
+  for (auto cam_ptr : cameras_ptr) {
+    std::string str_cam_id = "";
+    if (VmbErrorSuccess == cam_ptr->GetID(str_cam_id)) {
+      std::cout << "str_cam_id: " << str_cam_id;
+      AVTCamera avt_cam(&m_system, str_cam_id);
+      m_pCameras.push_back(avt_cam);
+    }
+  }
 }
 
-//
-// Gets the height of a frame
-//
-// Returns:
-//  The height as integer
-//
-int ApiController::GetHeight() const
-{
-  return static_cast<int>(m_nHeight);
-}
 
-//
-// Gets the pixel format of a frame
-//
-// Returns:
-//  The pixel format as enum
-//
-VmbPixelFormatType ApiController::GetPixelFormat() const
-{
-  return static_cast<VmbPixelFormatType>(m_nPixelFormat);
-}
-
-//
-// Gets the current frames per second
-//
-// Returns:
-//  Frame rate in Hertz
-//
-double ApiController::GetFPS() const
-{
-  return m_FPS;
-}
-
-//
-// Gets the oldest frame that has not been picked up yet
-//
-// Returns:
-//  A frame shared pointer
-//
-FramePtr ApiController::GetFrame()
-{
-  return SP_DYN_CAST( m_pFrameObserver, FrameObserver )->GetFrame();
-}
-
-//
-// Clears all remaining frames that have not been picked up
-//
-void ApiController::ClearFrameQueue()
-{
-  SP_DYN_CAST( m_pFrameObserver,FrameObserver )->ClearFrameQueue();
-}
-
-//
-// Queues a given frame to be filled by the API
-//
-// Parameters:
-//  [in]    pFrame          The frame to queue
-//
-// Returns:
-//  An API status code
-//
-VmbErrorType ApiController::QueueFrame( FramePtr pFrame )
-{
-  return SP_ACCESS( m_pCamera )->QueueFrame( pFrame );
-}
 
 //
 // Returns the camera observer as QObject pointer to connect their signals to the view's slots
@@ -368,13 +141,6 @@ CameraObserver* ApiController::GetCameraObserver()
   return SP_DYN_CAST( m_pCameraObserver, CameraObserver ).get();
 }
 
-//
-// Returns the frame observer as QObject pointer to connect their signals to the view's slots
-//
-FrameObserver* ApiController::GetFrameObserver()
-{
-  return SP_DYN_CAST( m_pFrameObserver, FrameObserver ).get();
-}
 
 //
 // Gets the version of the Vimba API
